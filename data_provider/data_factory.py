@@ -20,6 +20,7 @@ data_dict = {
     'OhioT1DM': Dataset_BGlucose,
     'BrisT1D': Dataset_BGlucose,
     'HUPA-UCM': Dataset_BGlucose,
+    'combined': Dataset_BGlucose,   # all three datasets merged for population training
 }
 
 

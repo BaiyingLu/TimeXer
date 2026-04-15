@@ -139,6 +139,11 @@ if __name__ == '__main__':
     # TimeXer
     parser.add_argument('--patch_len', type=int, default=16, help='patch length')
 
+    # Blood glucose (Dataset_BGlucose)
+    parser.add_argument('--scaler_root_path', type=str, default=None,
+                        help='Directory containing scalers.pkl. Defaults to root_path when not set. '
+                             'Set this when testing on a per-dataset split after combined training.')
+
     args = parser.parse_args()
     # args.use_gpu = True if torch.cuda.is_available() and args.use_gpu else False
     args.use_gpu = True if torch.cuda.is_available() else False

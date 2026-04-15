@@ -948,8 +948,23 @@ class Dataset_BGlucose(Dataset):
 
         segment_break |= glucose_nan_mask
 
+        # --- Valid window indices (cumsum trick, O(N)) ---
+        L = self.seq_len + self.pred_len
+        cum = np.cumsum(segment_break)
+        self.valid_indices = [
+            i for i in range(N - L + 1)
+            if cum[i + L - 1] == cum[i]
+        ]
+
+        # Subject ID for each valid window (used for per-subject eval in notebook)
+        self.subjects = np.array([participant_ids[i] for i in self.valid_indices])
+
         # --- Scaling ---
-        scaler_path = os.path.join(self.root_path, 'scalers.pkl')
+        # scaler_root_path: overrides root_path for scalers.pkl location.
+        # Set via args.scaler_root_path when testing on a per-dataset split
+        # after training on the combined dataset.
+        scaler_dir = getattr(self.args, 'scaler_root_path', None) or self.root_path
+        scaler_path = os.path.join(scaler_dir, 'scalers.pkl')
 
         if self.scale:
             if self.flag == 'train':
@@ -995,14 +1010,6 @@ class Dataset_BGlucose(Dataset):
             self.glucose_scaler = None
 
         self.data = data
-
-        # --- Valid window indices (cumsum trick, O(N)) ---
-        L = self.seq_len + self.pred_len
-        cum = np.cumsum(segment_break)
-        self.valid_indices = [
-            i for i in range(N - L + 1)
-            if cum[i + L - 1] == cum[i]
-        ]
 
         # --- Time stamp encoding ---
         df_stamp = pd.DataFrame({'date': dates_ts})

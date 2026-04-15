@@ -267,4 +267,10 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         np.save(folder_path + 'pred.npy', preds)
         np.save(folder_path + 'true.npy', trues)
 
+        # Save per-window subject IDs for per-subject evaluation in the notebook.
+        # test_data.subjects[i] is the subject ID of valid_indices[i]; the test
+        # DataLoader preserves order (shuffle=False, drop_last=False).
+        if hasattr(test_data, 'subjects'):
+            np.save(folder_path + 'subjects.npy', test_data.subjects)
+
         return

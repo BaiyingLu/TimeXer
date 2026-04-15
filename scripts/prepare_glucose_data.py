@@ -261,6 +261,8 @@ def main():
     )
     args = parser.parse_args()
 
+    train_frames, val_frames = [], []
+
     for name in args.datasets:
         cfg = DATASETS[name]
         src_dir = getattr(args, cfg["src_dir_key"])
@@ -279,9 +281,41 @@ def main():
 
         train, val, test = split_by_time(df)
 
+        # Prefix subject IDs in ALL splits so individual and combined datasets
+        # share the same subject ID namespace (e.g. ohio_559, bris_P01).
+        # This ensures the combined scalers.pkl can be reused at per-dataset
+        # test time without key mismatches.
+        prefix = cfg["prefix"]
+        for split_df in [train, val, test]:
+            split_df["subject"] = prefix + "_" + split_df["subject"].astype(str)
+
         save_split(train, out / f"{cfg['prefix']}_train.csv")
         save_split(val, out / f"{cfg['prefix']}_val.csv")
         save_split(test, out / f"{cfg['prefix']}_test.csv")
+
+        # Collect train/val for the combined dataset (subjects already prefixed).
+        for split_df, bucket in [(train, train_frames), (val, val_frames)]:
+            bucket.append(split_df[UNIFIED_COLS].copy())
+
+    # ── Combined dataset (train + val only; test stays per-dataset) ───────────
+    if len(args.datasets) > 1:
+        combined_out = args.out_dir / "combined"
+        combined_out.mkdir(parents=True, exist_ok=True)
+
+        print(f"\n{'='*60}")
+        print("Creating combined dataset")
+        print(f"{'='*60}")
+
+        combined_train = pd.concat(train_frames, ignore_index=True)
+        combined_val = pd.concat(val_frames, ignore_index=True)
+
+        combined_train.to_csv(combined_out / "combined_train.csv", index=False)
+        combined_val.to_csv(combined_out / "combined_val.csv", index=False)
+
+        print(f"  combined_train.csv: {len(combined_train):,} rows  "
+              f"({combined_train['subject'].nunique()} subjects)")
+        print(f"  combined_val.csv:   {len(combined_val):,} rows  "
+              f"({combined_val['subject'].nunique()} subjects)")
 
     print("\nDone.")
 
