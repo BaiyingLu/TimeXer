@@ -261,7 +261,7 @@ def main():
     )
     args = parser.parse_args()
 
-    train_frames, val_frames = [], []
+    train_frames, val_frames, test_frames = [], [], []
 
     for name in args.datasets:
         cfg = DATASETS[name]
@@ -293,8 +293,8 @@ def main():
         save_split(val, out / f"{cfg['prefix']}_val.csv")
         save_split(test, out / f"{cfg['prefix']}_test.csv")
 
-        # Collect train/val for the combined dataset (subjects already prefixed).
-        for split_df, bucket in [(train, train_frames), (val, val_frames)]:
+        # Collect all three splits for the combined dataset (subjects already prefixed).
+        for split_df, bucket in [(train, train_frames), (val, val_frames), (test, test_frames)]:
             bucket.append(split_df[UNIFIED_COLS].copy())
 
     # ── Combined dataset (train + val only; test stays per-dataset) ───────────
@@ -307,15 +307,19 @@ def main():
         print(f"{'='*60}")
 
         combined_train = pd.concat(train_frames, ignore_index=True)
-        combined_val = pd.concat(val_frames, ignore_index=True)
+        combined_val   = pd.concat(val_frames,   ignore_index=True)
+        combined_test  = pd.concat(test_frames,  ignore_index=True)
 
         combined_train.to_csv(combined_out / "combined_train.csv", index=False)
-        combined_val.to_csv(combined_out / "combined_val.csv", index=False)
+        combined_val.to_csv(  combined_out / "combined_val.csv",   index=False)
+        combined_test.to_csv( combined_out / "combined_test.csv",  index=False)
 
         print(f"  combined_train.csv: {len(combined_train):,} rows  "
               f"({combined_train['subject'].nunique()} subjects)")
         print(f"  combined_val.csv:   {len(combined_val):,} rows  "
               f"({combined_val['subject'].nunique()} subjects)")
+        print(f"  combined_test.csv:  {len(combined_test):,} rows  "
+              f"({combined_test['subject'].nunique()} subjects)")
 
     print("\nDone.")
 
