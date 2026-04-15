@@ -836,3 +836,207 @@ class Dataset_Meteorology(Dataset):
 
     def inverse_transform(self, data):
         return self.scaler.inverse_transform(data)
+
+
+class Dataset_BGlucose(Dataset):
+    """
+    Gap-aware CGM dataset for TimeXer (OhioT1DM / BrisT1D).
+
+    Normalization
+    -------------
+    - exo features [carbs, total_insulin, steps]: log1p then per-participant z-score
+    - glucose (last column): population-level z-score (no log1p)
+
+    Scalers are fit on the train split only and persisted to
+    {root_path}/scalers.pkl so val/test can load them without re-fitting.
+
+    Segment-break detection
+    -----------------------
+    A row i is a segment break if any of:
+      - participant_id changes relative to row i-1
+      - time gap > 30 min between row i-1 and row i
+      - glucose at row i is NaN
+
+    Any window [i, i+seq_len+pred_len) that contains a segment break is excluded
+    from valid_indices, so windows never straddle subject boundaries or sensor gaps.
+    """
+
+    def __init__(self, args, root_path, flag='train', size=None,
+                 features='MS', data_path='ohio_train.csv',
+                 target='glucose', scale=True, timeenc=0, freq='t',
+                 seasonal_patterns=None):
+        self.args = args
+        if size is None:
+            self.seq_len = 24
+            self.label_len = 6
+            self.pred_len = 6
+        else:
+            self.seq_len = size[0]
+            self.label_len = size[1]
+            self.pred_len = size[2]
+
+        assert flag in ['train', 'val', 'test']
+        self.flag = flag
+        self.features = features
+        self.target = target
+        self.scale = scale
+        self.timeenc = timeenc
+        self.freq = freq
+        self.root_path = root_path
+        self.data_path = data_path
+
+        self.__read_data__()
+
+    def _resolve_csv_path(self):
+        """Derive the split-specific CSV filename from data_path and flag.
+
+        e.g. data_path='ohio_train.csv', flag='val' -> 'ohio_val.csv'
+        """
+        stem = re.sub(r'_(train|val|test)\.csv$', '', self.data_path)
+        return os.path.join(self.root_path, f'{stem}_{self.flag}.csv')
+
+    def __read_data__(self):
+        import pickle
+
+        csv_path = self._resolve_csv_path()
+        df = pd.read_csv(csv_path)
+        df['date'] = pd.to_datetime(df['date'])
+
+        # Support both 'subject' (prepare_glucose_data.py output) and 'participant_id'
+        pid_col = 'subject' if 'subject' in df.columns else 'participant_id'
+        participant_ids = df[pid_col].astype(str).values
+        dates = df['date'].values  # numpy datetime64 array
+
+        # --- NaN handling ---
+        # Detect glucose NaN BEFORE any fill — these rows become segment breaks.
+        glucose_nan_mask = df['glucose'].isna().values
+
+        df['carbs'] = df['carbs'].replace('', np.nan).astype(float).fillna(0.0)
+        df['steps'] = df['steps'].replace('', np.nan).astype(float).fillna(0.0)
+
+        # total_insulin: forward-fill within each participant, then fill remaining 0
+        df['total_insulin'] = (
+            df.groupby(pid_col)['total_insulin']
+              .transform(lambda s: s.replace('', np.nan).astype(float).ffill())
+              .fillna(0.0)
+        )
+
+        # glucose NaN rows are excluded via segment_break; fill 0.0 as an
+        # inert placeholder so the data array stays rectangular.
+        df['glucose'] = df['glucose'].replace('', np.nan).astype(float).fillna(0.0)
+
+        # --- Build feature matrix: [carbs, total_insulin, steps, glucose] ---
+        exo_cols = ['carbs', 'total_insulin', 'steps']
+        feat_cols = exo_cols + ['glucose']   # glucose must be last column (MS mode)
+
+        # log1p on exo features (before z-score; handles zero-inflation / heavy tails)
+        for col in exo_cols:
+            df[col] = np.log1p(df[col].values)
+
+        data = df[feat_cols].values.astype(np.float32)   # (N, 4)
+        N = len(data)
+
+        # --- Segment-break detection ---
+        segment_break = np.zeros(N, dtype=bool)
+        segment_break[0] = True   # first row has no predecessor
+
+        segment_break[1:] |= (participant_ids[1:] != participant_ids[:-1])
+
+        dates_ts = pd.to_datetime(dates)
+        gap_seconds = (dates_ts[1:] - dates_ts[:-1]).total_seconds().values
+        segment_break[1:] |= (gap_seconds > 1800)   # 30 min = 1800 s
+
+        segment_break |= glucose_nan_mask
+
+        # --- Scaling ---
+        scaler_path = os.path.join(self.root_path, 'scalers.pkl')
+
+        if self.scale:
+            if self.flag == 'train':
+                exo_scalers = {}
+                for pid in np.unique(participant_ids):
+                    mask = participant_ids == pid
+                    scaler = StandardScaler()
+                    scaler.fit(data[mask, :3])
+                    exo_scalers[pid] = scaler
+
+                glucose_scaler = StandardScaler()
+                glucose_scaler.fit(data[:, 3:4])
+
+                with open(scaler_path, 'wb') as f:
+                    pickle.dump({'exo': exo_scalers, 'glucose': glucose_scaler}, f)
+
+            else:
+                if not os.path.exists(scaler_path):
+                    raise FileNotFoundError(
+                        f"Scaler file not found at '{scaler_path}'.\n"
+                        "Run the training split first to generate scalers.pkl."
+                    )
+                with open(scaler_path, 'rb') as f:
+                    scalers = pickle.load(f)
+                exo_scalers = scalers['exo']
+                glucose_scaler = scalers['glucose']
+
+            # Apply per-participant exo scalers
+            for pid in np.unique(participant_ids):
+                mask = participant_ids == pid
+                if pid not in exo_scalers:
+                    raise KeyError(
+                        f"Participant '{pid}' not found in scalers.pkl. "
+                        "This participant does not appear in the train split."
+                    )
+                data[mask, :3] = exo_scalers[pid].transform(data[mask, :3])
+
+            # Apply global glucose scaler
+            data[:, 3:4] = glucose_scaler.transform(data[:, 3:4])
+
+            self.glucose_scaler = glucose_scaler
+        else:
+            self.glucose_scaler = None
+
+        self.data = data
+
+        # --- Valid window indices (cumsum trick, O(N)) ---
+        L = self.seq_len + self.pred_len
+        cum = np.cumsum(segment_break)
+        self.valid_indices = [
+            i for i in range(N - L + 1)
+            if cum[i + L - 1] == cum[i]
+        ]
+
+        # --- Time stamp encoding ---
+        df_stamp = pd.DataFrame({'date': dates_ts})
+        if self.timeenc == 0:
+            df_stamp['month'] = df_stamp['date'].dt.month
+            df_stamp['day'] = df_stamp['date'].dt.day
+            df_stamp['weekday'] = df_stamp['date'].dt.weekday
+            df_stamp['hour'] = df_stamp['date'].dt.hour
+            df_stamp['minute'] = df_stamp['date'].dt.minute // 15
+            self.data_stamp = df_stamp.drop('date', axis=1).values
+        elif self.timeenc == 1:
+            self.data_stamp = time_features(
+                pd.to_datetime(df_stamp['date'].values), freq=self.freq
+            ).T
+
+    def __getitem__(self, index):
+        i = self.valid_indices[index]
+        s_end = i + self.seq_len
+        r_end = s_end + self.pred_len
+
+        seq_x = self.data[i:s_end]
+        seq_y = self.data[s_end - self.label_len:r_end]
+        seq_x_mark = self.data_stamp[i:s_end]
+        seq_y_mark = self.data_stamp[s_end - self.label_len:r_end]
+
+        return seq_x, seq_y, seq_x_mark, seq_y_mark
+
+    def __len__(self):
+        return len(self.valid_indices)
+
+    def inverse_transform(self, data):
+        # The exp loop tiles the MS single-col output to all 4 features, calls
+        # inverse_transform, then slices [:, :, -1] — only glucose is used.
+        out = data.copy()
+        if self.glucose_scaler is not None:
+            out[:, -1] = self.glucose_scaler.inverse_transform(data[:, -1:]).ravel()
+        return out
