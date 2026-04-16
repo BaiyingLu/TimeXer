@@ -273,4 +273,17 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         if hasattr(test_data, 'subjects'):
             np.save(folder_path + 'subjects.npy', test_data.subjects)
 
+        # Save prediction-window timestamps for per-window-type evaluation.
+        # timestamps[i] is a numpy datetime64 array of shape (pred_len,) giving
+        # the actual calendar times of the predicted glucose values for window i:
+        #   timestamps[i, 0] = t+5 min,  timestamps[i, -1] = t+30 min
+        if hasattr(test_data, 'dates') and hasattr(test_data, 'valid_indices'):
+            pred_len = self.args.pred_len
+            seq_len  = self.args.seq_len
+            ts = np.array([
+                test_data.dates[idx + seq_len : idx + seq_len + pred_len]
+                for idx in test_data.valid_indices
+            ])   # shape (N, pred_len)
+            np.save(folder_path + 'timestamps.npy', ts)
+
         return

@@ -929,9 +929,11 @@ class Dataset_BGlucose(Dataset):
         exo_cols = ['carbs', 'total_insulin', 'steps']
         feat_cols = exo_cols + ['glucose']   # glucose must be last column (MS mode)
 
-        # log1p on exo features (before z-score; handles zero-inflation / heavy tails)
+        # Clip exo features to >= 0 before log1p.
+        # Negative values (e.g. sensor artefacts in HUPA-UCM total_insulin) are
+        # physiologically impossible; log1p(x < -1) is undefined and returns NaN.
         for col in exo_cols:
-            df[col] = np.log1p(df[col].values)
+            df[col] = np.log1p(np.clip(df[col].values, 0, None))
 
         data = df[feat_cols].values.astype(np.float32)   # (N, 4)
         N = len(data)
@@ -1010,6 +1012,11 @@ class Dataset_BGlucose(Dataset):
             self.glucose_scaler = None
 
         self.data = data
+
+        # Raw datetime array — used to save prediction timestamps at test time.
+        # self.dates[valid_indices[i] + seq_len] is the first predicted timestep
+        # for window i (i.e. t+5 min), through +seq_len+pred_len-1 (t+30 min).
+        self.dates = dates_ts.values  # numpy datetime64 array, length N
 
         # --- Time stamp encoding ---
         df_stamp = pd.DataFrame({'date': dates_ts})
